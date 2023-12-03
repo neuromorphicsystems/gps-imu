@@ -1,0 +1,11 @@
+[package]
+name = "gpsrs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+thiserror = "1.0"
+
+[build-dependencies]
+bindgen = "0.69.1"
