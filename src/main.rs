@@ -39,7 +39,10 @@ fn main() -> anyhow::Result<()> {
         std::thread::sleep(std::time::Duration::from_secs(1));
         let mut write_buffer = [0xff; 2048];
         let mut read_buffer = [0x00; 2048];
-        let mut stdout = std::io::stdout();
+        let mut log_file = std::fs::OpenOptions::new()
+            .write(true)
+            .append(true)
+            .open("gps.nmea")?;
         loop {
             if last_call.elapsed() < std::time::Duration::from_secs(1) {
                 std::thread::sleep(std::time::Duration::from_secs(1) - last_call.elapsed());
@@ -51,7 +54,8 @@ fn main() -> anyhow::Result<()> {
                 .filter(|value| **value < 128)
                 .map(|value| char::from(*value))
                 .collect();
-            let _ = writeln!(stdout, "{}", message);
+            println!("{}", message);
+            writeln!(log_file, "{}", message)?;
         }
     } else {
         unreachable!();
