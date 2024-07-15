@@ -7,7 +7,16 @@ Note: the circuit schematics in documentation/pcb-circuit-diagram.pdf are outdat
 
 # Usage
 
+- macOS / Linux
+
 ```sh
 touch gps.nmea
+cargo run --release
+```
+
+- Windows
+
+```powershell
+echo $null >> gps.nmea
 cargo run --release
 ```
