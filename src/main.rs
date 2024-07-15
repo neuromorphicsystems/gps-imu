@@ -1,9 +1,25 @@
 mod ft4222;
 
 fn main() -> anyhow::Result<()> {
-    let devices = ft4222::list_devices()?;
-    if let Some(device) = devices.first() {
-        let mut handle = device.open_spi(
+    let serial_to_device = ft4222::list_devices()?;
+    if serial_to_device.is_empty() {
+        return Err(anyhow::anyhow!("No devices found"));
+    }
+    let mut selected_device = None;
+    for (serial, device) in serial_to_device.iter() {
+        if selected_device.is_none() {
+            println!("Selected device {}", serial.to_string());
+            selected_device = Some(device);
+        } else {
+            println!(
+                "More than one devices detected, ignoring {}",
+                serial.to_string()
+            );
+        }
+    }
+    if let Some(device) = selected_device {
+        let mut gps_handle = device.open_spi(
+            0,
             ft4222::ClockRate::EightyMHz,
             ft4222::ClockDivider::Sixteen,
             ft4222::Active::Low,
@@ -26,7 +42,7 @@ fn main() -> anyhow::Result<()> {
                 std::thread::sleep(std::time::Duration::from_secs(1) - last_call.elapsed());
             }
             last_call = std::time::Instant::now();
-            let bytes_transferred = handle.read_write(&mut write_buffer, &mut read_buffer)?;
+            let bytes_transferred = gps_handle.read_write(&mut write_buffer, &mut read_buffer)?;
             let message: String = read_buffer[0..bytes_transferred as usize]
                 .iter()
                 .filter(|value| **value < 128)
@@ -34,6 +50,7 @@ fn main() -> anyhow::Result<()> {
                 .collect();
             println!("{}", message);
         }
+    } else {
+        unreachable!();
     }
-    Ok(())
 }

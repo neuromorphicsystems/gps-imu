@@ -44,8 +44,21 @@ pub enum Error {
     OtherError,
     #[error("DeviceListNotReady")]
     DeviceListNotReady,
+    #[error("FailedToReadDevice")]
+    FailedToReadDevice,
+    #[error("GpioNotSupportedInThisMode")]
+    GpioNotSupportedInThisMode,
+
     #[error("Unknown status {0:?}")]
     Unknown(FT_STATUS),
+
+    #[error(
+        "Interface not found (trying to open interface {index} but the device only has {count})"
+    )]
+    Interface { index: usize, count: usize },
+
+    #[error("Unknown trigger value {0}")]
+    UnknownTrigger(u32),
 }
 
 fn check(value: FT_STATUS) -> Result<(), Error> {
@@ -70,6 +83,10 @@ fn check(value: FT_STATUS) -> Result<(), Error> {
         FT_NOT_SUPPORTED => Err(Error::NotSupported),
         FT_OTHER_ERROR => Err(Error::OtherError),
         FT_DEVICE_LIST_NOT_READY => Err(Error::DeviceListNotReady),
+        FT4222_STATUS_FT4222_FAILED_TO_READ_DEVICE => Err(Error::FailedToReadDevice),
+        FT4222_STATUS_FT4222_GPIO_NOT_SUPPORTED_IN_THIS_MODE => {
+            Err(Error::GpioNotSupportedInThisMode)
+        }
         value => Err(Error::Unknown(value)),
     }
 }
@@ -149,7 +166,7 @@ pub enum StringError {
     Length { expected: usize, got: usize },
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct SerialNumber(pub [i8; 16]);
 
 impl TryFrom<String> for SerialNumber {
@@ -168,6 +185,25 @@ impl TryFrom<String> for SerialNumber {
             *output = unsafe { *(input as *const u8 as *const i8) };
         }
         Ok(result)
+    }
+}
+
+impl SerialNumber {
+    pub fn to_string(&self) -> String {
+        use std::fmt::Write;
+        self.0.iter().fold(String::new(), |mut output, value| {
+            let _ = write!(
+                output,
+                "{}{:02X}",
+                if !output.is_empty() && (output.len() + 1 - output.len() / 8) % 8 == 0 {
+                    "-"
+                } else {
+                    ""
+                },
+                value.to_le_bytes()[0]
+            );
+            output
+        })
     }
 }
 
@@ -198,6 +234,7 @@ pub struct Location(pub u32);
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub struct DeviceInfo {
+    pub index: ::std::os::raw::c_int,
     pub port_open: bool,
     pub speed: Speed,
     pub device_type: DeviceType,
@@ -205,18 +242,21 @@ pub struct DeviceInfo {
     pub product_id: u16,
     pub serial_number: SerialNumber,
     pub description: Description,
-    pub index: usize,
     pub location: Location,
 }
 
-pub fn list_devices() -> Result<Vec<DeviceInfo>, Error> {
+#[derive(Debug)]
+pub struct Device(pub Vec<DeviceInfo>);
+
+pub fn list_devices() -> Result<std::collections::HashMap<SerialNumber, Device>, Error> {
+    let mut serial_to_device = std::collections::HashMap::new();
     let devices_length = {
         let mut devices_length: u32 = 0;
         check(unsafe { FT_CreateDeviceInfoList(&mut devices_length) })?;
         devices_length as usize
     };
     if devices_length == 0 {
-        return Ok(Vec::new());
+        return Ok(serial_to_device);
     }
     let mut info_nodes = vec![
         FT_DEVICE_LIST_INFO_NODE {
@@ -239,10 +279,9 @@ pub fn list_devices() -> Result<Vec<DeviceInfo>, Error> {
             )
         })?;
     }
-    let mut devices: Vec<_> = info_nodes
-        .iter()
-        .enumerate()
-        .map(|(index, info_node)| DeviceInfo {
+    let mut index = 0;
+    for info_node in info_nodes {
+        let device_info = DeviceInfo {
             index,
             location: Location(info_node.LocId),
             port_open: (info_node.Flags & 0b1) > 0,
@@ -256,16 +295,37 @@ pub fn list_devices() -> Result<Vec<DeviceInfo>, Error> {
             vendor_id: (info_node.ID & 0xFFFF) as u16,
             serial_number: SerialNumber(info_node.SerialNumber),
             description: Description(info_node.Description),
-        })
-        .collect();
-    devices.sort_unstable();
-    Ok(devices)
+        };
+        index += 1;
+        match serial_to_device.get_mut(&device_info.serial_number) {
+            Some(device) => {
+                device.0.push(device_info);
+            }
+            None => {
+                let mut device = Device(Vec::with_capacity(4));
+                let serial_number = device_info.serial_number;
+                device.0.push(device_info);
+                serial_to_device.insert(serial_number, device);
+            }
+        }
+    }
+    Ok(serial_to_device)
 }
 
 #[derive(Debug)]
-pub struct Handle(*mut ::std::os::raw::c_void);
+pub struct SpiHandle(*mut ::std::os::raw::c_void);
 
-impl Drop for Handle {
+impl Drop for SpiHandle {
+    fn drop(&mut self) {
+        unsafe { FT4222_UnInitialize(self.0) };
+        unsafe { FT_Close(self.0) };
+    }
+}
+
+#[derive(Debug)]
+pub struct GpioHandle(*mut ::std::os::raw::c_void);
+
+impl Drop for GpioHandle {
     fn drop(&mut self) {
         unsafe { FT4222_UnInitialize(self.0) };
         unsafe { FT_Close(self.0) };
@@ -317,7 +377,7 @@ impl OutputMap {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 #[repr(u32)]
 pub enum ClockRate {
     TwentyFourMHz = FT4222_ClockRate_SYS_CLK_24,
@@ -326,9 +386,69 @@ pub enum ClockRate {
     EightyMHz = FT4222_ClockRate_SYS_CLK_80,
 }
 
-impl DeviceInfo {
+#[derive(Debug, Clone, Copy)]
+pub enum Level {
+    High,
+    Low,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum TriggerEvent {
+    Rising,
+    Falling,
+    LevelHigh,
+    LevelLow,
+}
+
+impl TryFrom<u32> for TriggerEvent {
+    type Error = Error;
+
+    fn try_from(value: u32) -> Result<Self, Error> {
+        match value {
+            GPIO_Trigger_GPIO_TRIGGER_RISING => Ok(TriggerEvent::Rising),
+            GPIO_Trigger_GPIO_TRIGGER_FALLING => Ok(TriggerEvent::Falling),
+            GPIO_Trigger_GPIO_TRIGGER_LEVEL_HIGH => Ok(TriggerEvent::LevelHigh),
+            GPIO_Trigger_GPIO_TRIGGER_LEVEL_LOW => Ok(TriggerEvent::LevelLow),
+            value => Err(Error::UnknownTrigger(value)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum GpioMode {
+    Input,
+    InputTrigger {
+        rising: bool,
+        falling: bool,
+        level_high: bool,
+        level_low: bool,
+    },
+    Output(Level),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Gpio {
+    Ss0o,
+    Ss1o,
+    Ss2o,
+    Ss3o,
+}
+
+impl Gpio {
+    fn port(self) -> GPIO_Port {
+        match self {
+            Gpio::Ss0o => GPIO_Port_GPIO_PORT0,
+            Gpio::Ss1o => GPIO_Port_GPIO_PORT1,
+            Gpio::Ss2o => GPIO_Port_GPIO_PORT2,
+            Gpio::Ss3o => GPIO_Port_GPIO_PORT3,
+        }
+    }
+}
+
+impl Device {
     pub fn open_spi(
         &self,
+        index: usize,
         clock_rate: ClockRate,
         clock_divider: ClockDivider,
         active: Active,
@@ -336,9 +456,15 @@ impl DeviceInfo {
         output_map: OutputMap,
         read_timeout: std::time::Duration,
         write_timeout: std::time::Duration,
-    ) -> Result<Handle, Error> {
+    ) -> Result<SpiHandle, Error> {
+        if self.0.len() <= index {
+            return Err(Error::Interface {
+                index,
+                count: self.0.len(),
+            });
+        }
         let mut raw_handle = std::mem::MaybeUninit::uninit();
-        check(unsafe { FT_Open(self.index as ::std::os::raw::c_int, raw_handle.as_mut_ptr()) })?;
+        check(unsafe { FT_Open(index as i32, raw_handle.as_mut_ptr()) })?;
         let raw_handle = unsafe { raw_handle.assume_init() };
         check(unsafe { FT_ResetDevice(raw_handle) })?;
         check(unsafe { FT4222_SetClock(raw_handle, clock_rate as u32) })?;
@@ -359,11 +485,84 @@ impl DeviceInfo {
                 output_map.serialize(),
             )
         })?;
-        Ok(Handle(raw_handle))
+        Ok(SpiHandle(raw_handle))
+    }
+
+    pub fn open_gpio(&self, modes: [GpioMode; 4]) -> Result<GpioHandle, Error> {
+        if self.0.len() < 2 {
+            return Err(Error::Interface {
+                index: 1,
+                count: self.0.len(),
+            });
+        }
+        let mut raw_handle = std::mem::MaybeUninit::uninit();
+        check(unsafe { FT_Open(self.0[1].index, raw_handle.as_mut_ptr()) })?;
+        let raw_handle = unsafe { raw_handle.assume_init() };
+        let mut directions: [GPIO_Dir; 4] = core::array::from_fn(|index| match modes[index] {
+            GpioMode::Input | GpioMode::InputTrigger { .. } => GPIO_Dir_GPIO_INPUT,
+            GpioMode::Output(_) => GPIO_Dir_GPIO_OUTPUT,
+        });
+        check(unsafe { FT4222_GPIO_Init(raw_handle, directions.as_mut_ptr()) })?;
+        let mut handle = GpioHandle(raw_handle);
+        for (index, mode) in modes.iter().enumerate() {
+            match *mode {
+                GpioMode::Input => {}
+                GpioMode::InputTrigger {
+                    rising,
+                    falling,
+                    level_high,
+                    level_low,
+                } => {
+                    let mut trigger = 0;
+                    if rising {
+                        trigger |= GPIO_Trigger_GPIO_TRIGGER_RISING;
+                    }
+                    if falling {
+                        trigger |= GPIO_Trigger_GPIO_TRIGGER_FALLING;
+                    }
+                    if level_high {
+                        trigger |= GPIO_Trigger_GPIO_TRIGGER_LEVEL_HIGH;
+                    }
+                    if level_low {
+                        trigger |= GPIO_Trigger_GPIO_TRIGGER_LEVEL_LOW;
+                    }
+                    check(unsafe {
+                        FT4222_GPIO_SetInputTrigger(
+                            handle.0,
+                            match index {
+                                0 => Gpio::Ss0o,
+                                1 => Gpio::Ss1o,
+                                2 => Gpio::Ss2o,
+                                3 => Gpio::Ss3o,
+                                _ => unreachable!(),
+                            }
+                            .port(),
+                            trigger,
+                        )
+                    })?;
+                }
+                GpioMode::Output(level) => {
+                    handle.write(
+                        match index {
+                            0 => Gpio::Ss0o,
+                            1 => Gpio::Ss1o,
+                            2 => Gpio::Ss2o,
+                            3 => Gpio::Ss3o,
+                            _ => unreachable!(),
+                        },
+                        level,
+                    )?;
+                }
+            }
+        }
+        Ok(handle)
     }
 }
 
-impl Handle {
+impl SpiHandle {
+    pub fn enable_chip_select(&mut self, enable: bool) -> Result<(), Error> {
+        check(unsafe { FT4222_SPIMaster_SetCS(self.0, if enable { 1 } else { 0 }) })
+    }
     pub fn read_write(
         &mut self,
         write_buffer: &mut [u8],
@@ -381,5 +580,50 @@ impl Handle {
             )
         })?;
         Ok(bytes_transferred)
+    }
+}
+
+impl GpioHandle {
+    pub fn read(&mut self, gpio: Gpio) -> Result<Level, Error> {
+        let mut value: BOOL = 0;
+        check(unsafe { FT4222_GPIO_Read(self.0, gpio.port(), &mut value as *mut BOOL) })?;
+        Ok(if value > 0 { Level::High } else { Level::Low })
+    }
+
+    pub fn read_events(&mut self, gpio: Gpio, events: &mut Vec<u32>) -> Result<(), Error> {
+        let mut queue_size: u16 = 0;
+        check(unsafe {
+            FT4222_GPIO_GetTriggerStatus(self.0, gpio.port(), &mut queue_size as *mut u16)
+        })?;
+        events.clear();
+        if queue_size > 0 {
+            println!("{queue_size} events to read"); // @DEV
+            events.resize((queue_size / 4) as usize, 0u32);
+            let mut bytes_read: u16 = 0;
+            check(unsafe {
+                FT4222_GPIO_ReadTriggerQueue(
+                    self.0,
+                    gpio.port(),
+                    events.as_mut_ptr(),
+                    queue_size,
+                    &mut bytes_read as *mut u16,
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn write(&mut self, gpio: Gpio, level: Level) -> Result<(), Error> {
+        check(unsafe {
+            FT4222_GPIO_Write(
+                self.0,
+                gpio.port(),
+                match level {
+                    Level::High => 1,
+                    Level::Low => 0,
+                },
+            )
+        })?;
+        Ok(())
     }
 }
