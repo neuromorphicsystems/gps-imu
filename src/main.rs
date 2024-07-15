@@ -49,13 +49,17 @@ fn main() -> anyhow::Result<()> {
             }
             last_call = std::time::Instant::now();
             let bytes_transferred = gps_handle.read_write(&mut write_buffer, &mut read_buffer)?;
+            let unix_timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap_or(std::time::Duration::new(0, 0))
+                .as_micros() as u64;
             let message: String = read_buffer[0..bytes_transferred as usize]
                 .iter()
                 .filter(|value| **value < 128)
                 .map(|value| char::from(*value))
                 .collect();
-            println!("{}", message);
-            writeln!(log_file, "{}", message)?;
+            println!("unix_us={}\n{}", unix_timestamp, message);
+            writeln!(log_file, "unix_us={}\n{}", unix_timestamp, message)?;
         }
     } else {
         unreachable!();
