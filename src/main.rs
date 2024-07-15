@@ -1,5 +1,7 @@
 mod ft4222;
 
+use std::io::Write;
+
 fn main() -> anyhow::Result<()> {
     let serial_to_device = ft4222::list_devices()?;
     if serial_to_device.is_empty() {
@@ -37,6 +39,7 @@ fn main() -> anyhow::Result<()> {
         std::thread::sleep(std::time::Duration::from_secs(1));
         let mut write_buffer = [0xff; 2048];
         let mut read_buffer = [0x00; 2048];
+        let mut stdout = std::io::stdout();
         loop {
             if last_call.elapsed() < std::time::Duration::from_secs(1) {
                 std::thread::sleep(std::time::Duration::from_secs(1) - last_call.elapsed());
@@ -48,7 +51,7 @@ fn main() -> anyhow::Result<()> {
                 .filter(|value| **value < 128)
                 .map(|value| char::from(*value))
                 .collect();
-            println!("{}", message);
+            let _ = writeln!(stdout, "{}", message);
         }
     } else {
         unreachable!();
