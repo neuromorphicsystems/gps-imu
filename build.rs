@@ -41,7 +41,10 @@ fn main() {
             println!("cargo:rustc-link-lib=framework=IOKit");
             println!("cargo:rustc-link-lib=framework=CoreFoundation");
         }
-        "linux" | "windows" => {}
+        "linux" => {
+            println!("cargo:rustc-link-lib=c++.1");
+        }
+        "windows" => {}
         target_os => panic!("Target OS not supported: {target_os}"),
     }
     println!("cargo:rerun-if-changed={}", header_path.to_str().unwrap());
