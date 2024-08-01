@@ -42,7 +42,7 @@ fn main() {
             println!("cargo:rustc-link-lib=framework=CoreFoundation");
         }
         "linux" => {
-            println!("cargo:rustc-link-lib=c++.1");
+            println!("cargo:rustc-link-lib=stdc++");
         }
         "windows" => {}
         target_os => panic!("Target OS not supported: {target_os}"),
