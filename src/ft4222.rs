@@ -167,7 +167,7 @@ pub enum StringError {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct SerialNumber(pub [i8; 16]);
+pub struct SerialNumber(pub [u8; 16]);
 
 impl TryFrom<String> for SerialNumber {
     type Error = StringError;
@@ -182,7 +182,7 @@ impl TryFrom<String> for SerialNumber {
         let mut result = Self([0; 16]);
         for (input, output) in bytes.iter().zip(result.0.iter_mut()) {
             // unsafe: *const u8 and *const i8 have the same size
-            *output = unsafe { *(input as *const u8 as *const i8) };
+            *output = unsafe { (*(input as *const u8 as *const i8)).try_into().unwrap() };
         }
         Ok(result)
     }
@@ -208,7 +208,7 @@ impl SerialNumber {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
-pub struct Description(pub [i8; 64]);
+pub struct Description(pub [u8; 64]);
 
 impl TryFrom<String> for Description {
     type Error = StringError;
@@ -223,7 +223,7 @@ impl TryFrom<String> for Description {
         let mut result = Self([0; 64]);
         for (input, output) in bytes.iter().zip(result.0.iter_mut()) {
             // unsafe: *const u8 and *const i8 have the same size
-            *output = unsafe { *(input as *const u8 as *const i8) };
+            *output = unsafe { (*(input as *const u8 as *const i8)).try_into().unwrap() };
         }
         Ok(result)
     }
