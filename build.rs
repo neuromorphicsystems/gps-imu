@@ -18,7 +18,7 @@ fn main() {
                     vendor_path.join("linux").join("armv7-hf")
                 }
                 "aarch64-unknown-linux-musl" | "aarch64-unknown-linux-gnu" => {
-                    vendor_path.join("linux").join("armv8")
+                    vendor_path.join("linux").join("arm-v8")
                 }
                 target => panic!("Target not supported: {target}"),
             },
@@ -43,6 +43,9 @@ fn main() {
         }
         "linux" => {
             println!("cargo:rustc-link-lib=stdc++");
+            if std::env::var("CARGO_CFG_TARGET_ARCH").unwrap() == "aarch64" {
+                println!("cargo:rustc-link-arg=-no-pie");
+            }
         }
         "windows" => {}
         target_os => panic!("Target OS not supported: {target_os}"),
